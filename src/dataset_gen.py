@@ -5,6 +5,11 @@ Synthetic Cryptographic Dataset Generation Pipeline.
 import random
 from typing import Dict, Any
 
+from Crypto.Cipher import AES, DES, ARC4
+from Crypto.Hash import MD5, SHA256
+from Crypto.Random import get_random_bytes
+from Crypto.Util.Padding import pad
+
 # Target Algorithm Configuration
 TARGET_ALGORITHMS = {
     "AES-ECB": {"category": "block_16", "block_size": 16},
@@ -61,7 +66,7 @@ class PlaintextGenerator:
 
         elif ptype == "short":
             short_len = random.randint(1, 15)
-            return bytes([random.randint(0, 255) for _ in range(short_len)])
+            return get_random_bytes(short_len)
 
         elif ptype == "natural_text":
             base = random.choice(cls.NATURAL_TEXT_SAMPLES).encode("utf-8")
@@ -70,7 +75,52 @@ class PlaintextGenerator:
             return base[:target_len]
 
         elif ptype == "random":
-            return bytes([random.randint(0, 255) for _ in range(target_len)])
+            return get_random_bytes(target_len)
 
         else:
             raise ValueError(f"Unknown plaintext type: {ptype}")
+
+
+class CryptoEngine:
+    """Wrapper around PyCryptodome primitives with random key/IV generation."""
+
+    @staticmethod
+    def encrypt_sample(algo: str, plaintext: bytes) -> bytes:
+        """Encrypt or hash the given plaintext using the target algorithm."""
+        if algo == "AES-ECB":
+            key = get_random_bytes(16)
+            cipher = AES.new(key, AES.MODE_ECB)
+            padded_pt = pad(plaintext, AES.block_size, style="pkcs7")
+            return cipher.encrypt(padded_pt)
+
+        elif algo == "AES-CBC":
+            key = get_random_bytes(16)
+            iv = get_random_bytes(16)
+            cipher = AES.new(key, AES.MODE_CBC, iv=iv)
+            padded_pt = pad(plaintext, AES.block_size, style="pkcs7")
+            return cipher.encrypt(padded_pt)
+
+        elif algo == "DES-CBC":
+            key = get_random_bytes(8)
+            iv = get_random_bytes(8)
+            cipher = DES.new(key, DES.MODE_CBC, iv=iv)
+            padded_pt = pad(plaintext, DES.block_size, style="pkcs7")
+            return cipher.encrypt(padded_pt)
+
+        elif algo == "RC4":
+            key = get_random_bytes(16)
+            cipher = ARC4.new(key)
+            return cipher.encrypt(plaintext)
+
+        elif algo == "MD5":
+            hasher = MD5.new()
+            hasher.update(plaintext)
+            return hasher.digest()
+
+        elif algo == "SHA-256":
+            hasher = SHA256.new()
+            hasher.update(plaintext)
+            return hasher.digest()
+
+        else:
+            raise ValueError(f"Unsupported algorithm: {algo}")
