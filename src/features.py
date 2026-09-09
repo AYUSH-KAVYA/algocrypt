@@ -7,7 +7,7 @@ capturing structural properties, block repetition artifacts, and statistical met
 
 from collections import Counter
 import math
-from typing import Dict, Union, Any
+from typing import Dict, Union, Any, Tuple, List
 import numpy as np
 import pandas as pd
 
@@ -136,3 +136,26 @@ def extract_statistical_features(data_bytes: bytes) -> Dict[str, float]:
         "chi_square_stat": float(chi_square),
         "serial_correlation": serial_corr,
     }
+
+
+def extract_features(data: Union[str, bytes]) -> Dict[str, Union[int, float]]:
+    """Extract complete numerical feature dictionary from input bytes or hex string."""
+    data_bytes = _to_bytes(data)
+    features = {}
+    features.update(extract_structural_features(data_bytes))
+    features.update(extract_pattern_features(data_bytes))
+    features.update(extract_statistical_features(data_bytes))
+    return features
+
+
+def extract_features_dataframe(
+    df: pd.DataFrame, hex_col: str = "ciphertext_hex", target_col: str = "label"
+) -> Tuple[pd.DataFrame, pd.Series]:
+    """Transform a dataset DataFrame into a numerical feature matrix X and target labels y."""
+    feature_rows = []
+    for hex_val in df[hex_col]:
+        feature_rows.append(extract_features(hex_val))
+
+    X = pd.DataFrame(feature_rows)
+    y = df[target_col] if target_col in df.columns else pd.Series([], dtype=str)
+    return X, y
