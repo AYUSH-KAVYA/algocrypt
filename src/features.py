@@ -6,6 +6,7 @@ capturing structural properties, block repetition artifacts, and statistical met
 """
 
 from collections import Counter
+import math
 from typing import Dict, Union, Any
 import numpy as np
 import pandas as pd
@@ -83,3 +84,55 @@ def extract_pattern_features(data_bytes: bytes) -> Dict[str, Union[int, float]]:
         features["printable_ascii_ratio"] = 0.0
 
     return features
+
+
+def extract_statistical_features(data_bytes: bytes) -> Dict[str, float]:
+    """Extract Shannon entropy, byte distribution variance, Chi-Square stat, and serial correlation."""
+    length = len(data_bytes)
+    if length == 0:
+        return {
+            "shannon_entropy": 0.0,
+            "byte_mean": 0.0,
+            "byte_std": 0.0,
+            "byte_var": 0.0,
+            "chi_square_stat": 0.0,
+            "serial_correlation": 0.0,
+        }
+
+    counts = Counter(data_bytes)
+    
+    # 1. Shannon Entropy (max 8.0)
+    entropy = 0.0
+    for count in counts.values():
+        p = count / length
+        entropy -= p * math.log2(p)
+
+    # 2. Byte value mean, std, variance
+    arr = np.frombuffer(data_bytes, dtype=np.uint8)
+    byte_mean = float(np.mean(arr))
+    byte_std = float(np.std(arr))
+    byte_var = float(np.var(arr))
+
+    # 3. Chi-Square goodness-of-fit statistic against uniform distribution
+    expected = length / 256.0
+    chi_square = sum((counts.get(b, 0) - expected) ** 2 / expected for b in range(256))
+
+    # 4. Serial correlation coefficient (adjacent byte autocorrelation)
+    if length > 1:
+        x = arr[:-1].astype(np.float64)
+        y = arr[1:].astype(np.float64)
+        mean_x, mean_y = np.mean(x), np.mean(y)
+        num = np.sum((x - mean_x) * (y - mean_y))
+        den = np.sqrt(np.sum((x - mean_x) ** 2) * np.sum((y - mean_y) ** 2))
+        serial_corr = float(num / den) if den > 0 else 0.0
+    else:
+        serial_corr = 0.0
+
+    return {
+        "shannon_entropy": float(entropy),
+        "byte_mean": byte_mean,
+        "byte_std": byte_std,
+        "byte_var": byte_var,
+        "chi_square_stat": float(chi_square),
+        "serial_correlation": serial_corr,
+    }
