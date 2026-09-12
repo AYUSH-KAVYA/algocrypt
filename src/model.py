@@ -7,7 +7,7 @@ and provides serialization/deserialization routines using joblib.
 """
 
 import os
-from typing import Dict, Any, Tuple, List
+from typing import Dict, Any, Tuple, List, Union
 import joblib
 import numpy as np
 import pandas as pd
@@ -15,7 +15,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
 from sklearn.model_selection import train_test_split
 
-from src.features import extract_features_dataframe
+from src.explainability import ForensicExplainer
 
 
 def train_model(
@@ -26,13 +26,13 @@ def train_model(
         X, y, test_size=test_size, random_state=seed, stratify=y
     )
 
-    clf = RandomForestClassifier(n_estimators=100, max_depth=15, random_state=seed)
+    clf = RandomForestClassifier(n_estimators=150, max_depth=18, random_state=seed)
     clf.fit(X_train, y_train)
 
     y_pred = clf.predict(X_test)
     acc = float(accuracy_score(y_test, y_pred))
     cm = confusion_matrix(y_test, y_pred, labels=clf.classes_)
-    report = classification_report(y_test, y_pred, output_dict=False)
+    report_text = classification_report(y_test, y_pred, output_dict=False)
     report_dict = classification_report(y_test, y_pred, output_dict=True)
 
     feature_importances = dict(
@@ -47,37 +47,69 @@ def train_model(
         "accuracy": acc,
         "confusion_matrix": cm.tolist(),
         "classes": list(clf.classes_),
-        "classification_report_text": report,
+        "classification_report_text": report_text,
         "classification_report_dict": report_dict,
         "feature_importances": feature_importances,
+        "feature_names": list(X.columns),
         "test_samples": len(y_test),
     }
 
     return clf, metrics
 
 
-def save_model(model: RandomForestClassifier, filepath: str = "models/model.joblib") -> str:
-    """Save trained model to disk using joblib."""
+def save_model(
+    model: RandomForestClassifier, filepath: str = "models/model.joblib", feature_names: List[str] = None
+) -> str:
+    """Save trained model and strict feature order metadata to disk using joblib."""
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    joblib.dump(model, filepath)
+    if feature_names is None and hasattr(model, "feature_names_in_"):
+        feature_names = list(model.feature_names_in_)
+
+    payload = {
+        "model": model,
+        "feature_names": feature_names,
+        "classes": list(model.classes_),
+    }
+    joblib.dump(payload, filepath)
     return filepath
 
 
-def load_model(filepath: str = "models/model.joblib") -> RandomForestClassifier:
-    """Load trained model from disk using joblib."""
+def load_model(filepath: str = "models/model.joblib") -> Tuple[RandomForestClassifier, List[str]]:
+    """Load trained model payload from disk using joblib, returning (model, feature_names)."""
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Model file not found at '{filepath}'. Please train a model first.")
-    return joblib.load(filepath)
+    
+    data = joblib.load(filepath)
+    if isinstance(data, dict) and "model" in data:
+        return data["model"], data.get("feature_names", [])
+    elif isinstance(data, RandomForestClassifier):
+        feature_names = list(data.feature_names_in_) if hasattr(data, "feature_names_in_") else []
+        return data, feature_names
+    else:
+        raise ValueError("Invalid model file format.")
 
 
 def predict_sample(
-    model: RandomForestClassifier, feature_dict: Dict[str, Any]
-) -> Tuple[str, float, List[Tuple[str, float]]]:
-    """Predict algorithm label, confidence, and top-3 probabilities for a single feature dictionary."""
-    # Ensure feature DataFrame matches model input feature names and order
-    if hasattr(model, "feature_names_in_"):
-        expected_cols = list(model.feature_names_in_)
-        sample_df = pd.DataFrame([[feature_dict.get(col, 0.0) for col in expected_cols]], columns=expected_cols)
+    model_obj: Union[RandomForestClassifier, Tuple[RandomForestClassifier, List[str]]],
+    feature_dict: Dict[str, Any],
+    feature_names: List[str] = None,
+) -> Tuple[str, float, List[Tuple[str, float]], Dict[str, Any]]:
+    """Predict algorithm label, confidence, top-3 probabilities, and forensic explainability breakdown."""
+    if isinstance(model_obj, tuple):
+        model, stored_feature_names = model_obj
+        if feature_names is None:
+            feature_names = stored_feature_names
+    else:
+        model = model_obj
+
+    if feature_names is None or len(feature_names) == 0:
+        if hasattr(model, "feature_names_in_"):
+            feature_names = list(model.feature_names_in_)
+
+    # Enforce strict feature ordering matching training matrix
+    if feature_names:
+        row = [feature_dict.get(col, 0.0) for col in feature_names]
+        sample_df = pd.DataFrame([row], columns=feature_names)
     else:
         sample_df = pd.DataFrame([feature_dict])
 
@@ -89,4 +121,6 @@ def predict_sample(
     top_label, top_conf = sorted_pairs[0]
     top_3 = sorted_pairs[:3]
 
-    return top_label, float(top_conf), top_3
+    explanation = ForensicExplainer.explain(top_label, float(top_conf), top_3, feature_dict)
+
+    return top_label, float(top_conf), top_3, explanation

@@ -23,7 +23,6 @@ def test_train_model(synthetic_features):
     model, metrics = train_model(X, y, test_size=0.2, seed=42)
 
     assert isinstance(model, RandomForestClassifier)
-    # Baseline accuracy across 6 classes (random guess is 16.7%)
     assert metrics["accuracy"] > 0.65
     assert len(metrics["classes"]) == 6
     assert "confusion_matrix" in metrics
@@ -36,12 +35,13 @@ def test_save_and_load_model(synthetic_features, tmp_path):
     model, _ = train_model(X, y, test_size=0.2, seed=42)
 
     model_path = str(tmp_path / "test_model.joblib")
-    save_path = save_model(model, model_path)
+    save_path = save_model(model, model_path, feature_names=list(X.columns))
     assert os.path.exists(save_path)
 
-    loaded_model = load_model(save_path)
+    loaded_model, feature_names = load_model(save_path)
     assert isinstance(loaded_model, RandomForestClassifier)
     assert loaded_model.classes_.tolist() == model.classes_.tolist()
+    assert feature_names == list(X.columns)
 
 
 def test_predict_sample(synthetic_features):
@@ -49,10 +49,12 @@ def test_predict_sample(synthetic_features):
     model, _ = train_model(X, y, test_size=0.2, seed=42)
 
     sample_dict = X.iloc[0].to_dict()
-    label, conf, top_3 = predict_sample(model, sample_dict)
+    label, conf, top_3, exp_dict = predict_sample(model, sample_dict)
 
     assert isinstance(label, str)
     assert 0.0 <= conf <= 1.0
     assert len(top_3) <= 3
     assert top_3[0][0] == label
     assert top_3[0][1] == conf
+    assert "verdict" in exp_dict
+    assert "evidence_notes" in exp_dict
