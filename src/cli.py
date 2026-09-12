@@ -28,29 +28,28 @@ def cli():
 
 
 @cli.command()
-@click.option("--file", "-f", "file_path", required=True, type=click.Path(exists=True), help="Path to input binary file to analyze.")
+@click.option("--file", "-f", "file_path", required=True, type=click.Path(exists=True), help="Path to input binary/text file to analyze.")
 @click.option("--model", "-m", "model_path", default=DEFAULT_MODEL_PATH, help="Path to trained model file (.joblib).")
-def analyze(file_path: str, model_path: str):
+@click.option("--explain", "-e", "explain_mode", is_flag=True, help="Enable detailed forensic explainability view.")
+def analyze(file_path: str, model_path: str, explain_mode: bool):
     """Analyze an unknown dataset/ciphertext file and predict the cryptographic algorithm."""
-    click.echo(click.style(f"[*] Analyzing target file: {file_path}", fg="cyan", bold=True))
-
-    # 1. Read binary content
+    # 1. Fail-Fast File Guard
     try:
         with open(file_path, "rb") as f:
             raw_bytes = f.read()
     except Exception as e:
-        click.echo(click.style(f"[!] Failed to read file: {e}", fg="red"))
+        click.echo(click.style(f"[!] Failed to read file '{file_path}': {e}", fg="red"))
         sys.exit(1)
 
     file_size = len(raw_bytes)
-    click.echo(f"[*] File Size: {file_size} bytes ({file_size * 8} bits)")
-
     if file_size == 0:
-        click.echo(click.style("[!] Error: Input file is empty.", fg="red"))
+        click.echo(click.style(f"[!] Error: File '{file_path}' is empty (0 bytes). Cannot perform classification.", fg="red", bold=True))
         sys.exit(1)
 
-    # 2. Extract features
-    click.echo("[*] Extracting structural, pattern, and statistical features...")
+    if file_size < 16:
+        click.echo(click.style(f"[!] Warning: File size ({file_size} bytes) is under 16 bytes. Statistical entropy calculations will have higher variance.", fg="yellow"))
+
+    # 2. Feature Extraction
     feature_dict = extract_features(raw_bytes)
 
     # 3. Load or Auto-Train Model
@@ -65,38 +64,55 @@ def analyze(file_path: str, model_path: str):
             df_gen = pd.read_csv(DEFAULT_DATASET_PATH)
 
         X_train, y_train = extract_features_dataframe(df_gen)
-        clf, _ = train_model(X_train, y_train, seed=42)
-        save_model(clf, model_path)
+        clf, metrics = train_model(X_train, y_train, seed=42)
+        save_model(clf, model_path, feature_names=list(X_train.columns))
         click.echo(click.style(f"[+] Model trained and saved to {model_path}", fg="green"))
-    
-    clf = load_model(model_path)
 
-    # 4. Predict
-    top_label, top_conf, top_3 = predict_sample(clf, feature_dict)
+    clf, feature_names = load_model(model_path)
 
-    # 5. Display Result
-    click.echo("\n" + "=" * 60)
-    click.echo(click.style("                  IDENTIFICATION RESULTS                  ", fg="white", bg="blue", bold=True))
-    click.echo("=" * 60)
-    
+    # 4. Predict with Forensic Explainer
+    top_label, top_conf, top_3, exp_dict = predict_sample((clf, feature_names), feature_dict)
+    final_verdict = exp_dict["verdict"]
+
+    # 5. Dual-Tier Terminal Display
     conf_pct = top_conf * 100
-    color = "green" if conf_pct >= 80 else "yellow" if conf_pct >= 50 else "red"
-    click.echo(f" Top Prediction  : " + click.style(f"{top_label}", fg=color, bold=True))
-    click.echo(f" Confidence Score: " + click.style(f"{conf_pct:.2f}%", fg=color, bold=True))
-    click.echo("-" * 60)
+    color = "green" if conf_pct >= 80 and not exp_dict["is_indeterminate"] else "yellow" if conf_pct >= 40 else "red"
 
-    click.echo(click.style(" Top-3 Probable Algorithms:", bold=True))
-    for idx, (algo, prob) in enumerate(top_3, 1):
-        bar = "█" * int(prob * 30)
-        click.echo(f"  {idx}. {algo:<10} [{bar:<30}] {prob * 100:6.2f}%")
+    if not explain_mode:
+        # Minimal View
+        click.echo(f"[+] File           : {file_path} ({file_size} bytes)")
+        click.echo(f"[+] Top Prediction : " + click.style(f"{final_verdict}", fg=color, bold=True))
+        click.echo(f"[+] Confidence     : " + click.style(f"{conf_pct:.2f}%", fg=color, bold=True))
+        click.echo(click.style("    (Use --explain or -e for full forensic evidence report)", dim=True))
+    else:
+        # Full Forensic Explainable View
+        click.echo("\n" + "=" * 65)
+        click.echo(click.style("               FORENSIC IDENTIFICATION REPORT               ", fg="white", bg="blue", bold=True))
+        click.echo("=" * 65)
+        click.echo(f" Target File     : {file_path}")
+        click.echo(f" File Size       : {file_size} bytes ({file_size * 8} bits)")
+        click.echo(f" Final Verdict   : " + click.style(f"{final_verdict}", fg=color, bold=True))
+        click.echo(f" Confidence Score: " + click.style(f"{conf_pct:.2f}%", fg=color, bold=True))
+        click.echo("-" * 65)
 
-    click.echo("-" * 60)
-    click.echo(click.style(" Forensic Artifact Evidence:", bold=True))
-    click.echo(f"  • Shannon Entropy    : {feature_dict['shannon_entropy']:.4f} / 8.0000")
-    click.echo(f"  • Block Alignment    : 16-byte={bool(feature_dict['is_mod_16'])}, 8-byte={bool(feature_dict['is_mod_8'])}")
-    click.echo(f"  • 16-Byte Duplicates : {int(feature_dict['rep_16byte_count'])} duplicate blocks")
-    click.echo(f"  • OpenSSL Header     : {'Detected (Salted__)' if feature_dict['has_openssl_header'] else 'None'}")
-    click.echo("=" * 60 + "\n")
+        click.echo(click.style(" Top-3 Candidate Probabilities:", bold=True))
+        for idx, (algo, prob) in enumerate(top_3, 1):
+            bar = "█" * int(prob * 30)
+            click.echo(f"  {idx}. {algo:<10} [{bar:<30}] {prob * 100:6.2f}%")
+
+        click.echo("-" * 65)
+        click.echo(click.style(" Forensic Artifact Evidence:", bold=True))
+        for note in exp_dict["evidence_notes"]:
+            click.echo(f"  • {note}")
+
+        click.echo("-" * 65)
+        click.echo(click.style(" Key Feature Vector:", bold=True))
+        click.echo(f"  • Shannon Entropy    : {feature_dict['shannon_entropy']:.4f} / 8.0000")
+        click.echo(f"  • Block Alignment    : 16-byte={bool(feature_dict['is_mod_16'])}, 8-byte={bool(feature_dict['is_mod_8'])}")
+        click.echo(f"  • 16-Byte Duplicates : {int(feature_dict['rep_16byte_count'])} duplicate blocks (ratio: {feature_dict['rep_16byte_ratio']:.2f})")
+        click.echo(f"  • OpenSSL Header     : {'Detected (Salted__)' if feature_dict['has_openssl_header'] else 'None'}")
+        click.echo(f"  • Format Magic Header: {'Detected' if feature_dict['has_archive_header'] else 'None'}")
+        click.echo("=" * 65 + "\n")
 
 
 @cli.command()
@@ -115,7 +131,7 @@ def train(dataset_path: str, model_path: str, test_size: float):
     click.echo("[*] Extracting feature vectors...")
     X, y = extract_features_dataframe(df)
 
-    click.echo(f"[*] Training RandomForestClassifier on {len(X)} samples...")
+    click.echo(f"[*] Training RandomForestClassifier on {len(X)} samples across {len(y.unique())} target classes...")
     clf, metrics = train_model(X, y, test_size=test_size, seed=42)
 
     click.echo("\n" + click.style("=== MODEL EVALUATION METRICS ===", fg="cyan", bold=True))
@@ -123,7 +139,7 @@ def train(dataset_path: str, model_path: str, test_size: float):
     click.echo("Classification Report:")
     click.echo(metrics["classification_report_text"])
 
-    save_model(clf, model_path)
+    save_model(clf, model_path, feature_names=list(X.columns))
     click.echo(click.style(f"[+] Model saved to {model_path}", fg="green"))
 
 

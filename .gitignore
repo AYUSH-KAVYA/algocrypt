@@ -3,5 +3,6 @@ venv/
 __pycache__/
 data/
 models/
+tests/samples/
 *.pyc
 .ipynb_checkpoints/
