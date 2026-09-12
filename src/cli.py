@@ -18,6 +18,7 @@ from src.model import train_model, save_model, load_model, predict_sample
 
 DEFAULT_MODEL_PATH = "models/model.joblib"
 DEFAULT_DATASET_PATH = "data/dataset.csv"
+MAX_ANALYSIS_BYTES = 10 * 1024 * 1024  # 10 MB cap for memory safety on massive files
 
 
 @click.group()
@@ -33,21 +34,35 @@ def cli():
 @click.option("--explain", "-e", "explain_mode", is_flag=True, help="Enable detailed forensic explainability view.")
 def analyze(file_path: str, model_path: str, explain_mode: bool):
     """Analyze an unknown dataset/ciphertext file and predict the cryptographic algorithm."""
-    # 1. Fail-Fast File Guard
+    # 1. Fail-Fast File Guard & Chunked Memory Protection
     try:
-        with open(file_path, "rb") as f:
-            raw_bytes = f.read()
+        file_size = os.path.getsize(file_path)
     except Exception as e:
-        click.echo(click.style(f"[!] Failed to read file '{file_path}': {e}", fg="red"))
+        click.echo(click.style(f"[!] Error inspecting file '{file_path}': {e}", fg="red"))
         sys.exit(1)
 
-    file_size = len(raw_bytes)
     if file_size == 0:
         click.echo(click.style(f"[!] Error: File '{file_path}' is empty (0 bytes). Cannot perform classification.", fg="red", bold=True))
         sys.exit(1)
 
     if file_size < 16:
         click.echo(click.style(f"[!] Warning: File size ({file_size} bytes) is under 16 bytes. Statistical entropy calculations will have higher variance.", fg="yellow"))
+
+    # Read file safely in chunks up to MAX_ANALYSIS_BYTES
+    raw_buffer = bytearray()
+    try:
+        with open(file_path, "rb") as f:
+            while len(raw_buffer) < MAX_ANALYSIS_BYTES:
+                chunk = f.read(min(65536, MAX_ANALYSIS_BYTES - len(raw_buffer)))
+                if not chunk:
+                    break
+                raw_buffer.extend(chunk)
+    except Exception as e:
+        click.echo(click.style(f"[!] Error reading file '{file_path}': {e}", fg="red"))
+        sys.exit(1)
+
+    raw_bytes = bytes(raw_buffer)
+    analyzed_size = len(raw_bytes)
 
     # 2. Feature Extraction
     feature_dict = extract_features(raw_bytes)
@@ -91,6 +106,8 @@ def analyze(file_path: str, model_path: str, explain_mode: bool):
         click.echo("=" * 65)
         click.echo(f" Target File     : {file_path}")
         click.echo(f" File Size       : {file_size} bytes ({file_size * 8} bits)")
+        if file_size > MAX_ANALYSIS_BYTES:
+            click.echo(f" Analyzed Bytes  : {analyzed_size} bytes (capped at 10MB chunk for memory safety)")
         click.echo(f" Final Verdict   : " + click.style(f"{final_verdict}", fg=color, bold=True))
         click.echo(f" Confidence Score: " + click.style(f"{conf_pct:.2f}%", fg=color, bold=True))
         click.echo("-" * 65)
