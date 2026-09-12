@@ -2,28 +2,46 @@
 Feature Extraction Module for Cryptographic Algorithm Identification.
 
 Translates raw ciphertext bytes or hex strings into numerical feature vectors
-capturing structural properties, block repetition artifacts, and statistical metrics.
+capturing structural properties, block repetition artifacts, statistical metrics,
+and non-cryptographic file signatures.
 """
 
 from collections import Counter
 import math
+import re
 from typing import Dict, Union, Any, Tuple, List
 import numpy as np
 import pandas as pd
 
 
+# Known non-cryptographic / archive magic byte signatures
+ARCHIVE_MAGIC_BYTES = [
+    b"PK\x03\x04",        # ZIP archive
+    b"PK\x05\x06",        # Empty ZIP
+    b"\x1f\x8b",          # GZIP compressed
+    b"\x89PNG\r\n\x1a\n", # PNG image
+    b"%PDF-",             # PDF document
+    b"\x7fELF",           # Linux ELF executable
+    b"BZh",               # BZIP2
+    b"\xfd7zXZ\x00",      # XZ archive
+]
+
+
 def _to_bytes(data: Union[str, bytes]) -> bytes:
-    """Convert hex string or raw bytes into a byte array."""
+    """Convert hex string, text, or raw bytes into a raw byte array."""
     if isinstance(data, bytes):
         return data
     if isinstance(data, str):
         cleaned = data.strip()
         if cleaned.startswith("0x") or cleaned.startswith("0X"):
             cleaned = cleaned[2:]
-        try:
-            return bytes.fromhex(cleaned)
-        except ValueError:
-            return cleaned.encode("utf-8")
+        # Check if valid hex string (even length, hex digits only)
+        if len(cleaned) % 2 == 0 and bool(re.match(r"^[0-9a-fA-F]+$", cleaned)):
+            try:
+                return bytes.fromhex(cleaned)
+            except ValueError:
+                pass
+        return cleaned.encode("utf-8")
     raise TypeError(f"Expected str or bytes, got {type(data)}")
 
 
@@ -75,6 +93,10 @@ def extract_pattern_features(data_bytes: bytes) -> Dict[str, Union[int, float]]:
 
     # OpenSSL magic header check: "Salted__" (b"Salted__")
     features["has_openssl_header"] = int(data_bytes.startswith(b"Salted__"))
+
+    # Non-crypto archive / format magic header check
+    has_archive = any(data_bytes.startswith(hdr) for hdr in ARCHIVE_MAGIC_BYTES)
+    features["has_archive_header"] = int(has_archive)
 
     # Printable ASCII byte ratio
     if length > 0:
